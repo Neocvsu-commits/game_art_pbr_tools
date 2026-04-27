@@ -1,4 +1,4 @@
-# Game Art PBR Tools（PBR贴图助手）团队内部使用文档
+# Game Art PBR Tools（PBR贴图工具）团队内部使用文档
 
 为解决日常 PBR 材质制作与贴图管理中高频、重复的节点连线、命名、清理等繁琐操作，我们开发了
 PBR 贴图助手 (Game Art PBR Tools v2.3)。
