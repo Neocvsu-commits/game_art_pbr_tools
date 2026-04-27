@@ -1,0 +1,182 @@
+import bpy
+
+class NODE_PT_PBRMainPanel(bpy.types.Panel):
+    bl_label = "PBR 贴图助手"
+    bl_idname = "NODE_PT_pbr_main"
+    bl_space_type = 'NODE_EDITOR'
+    bl_region_type = 'UI'
+    bl_category = 'PBR Tool'
+
+    def draw(self, context):
+        pass
+
+class NODE_PT_PBRCorePanel(bpy.types.Panel):
+    bl_label = "贴图连接"
+    bl_idname = "NODE_PT_pbr_core"
+    bl_space_type = 'NODE_EDITOR'
+    bl_region_type = 'UI'
+    bl_category = 'PBR Tool'
+    bl_parent_id = "NODE_PT_pbr_main"
+
+    def draw(self, context):
+        layout = self.layout
+        props = context.scene.pbr_v2_props
+        
+        def draw_action_row(layout, operator, icon, prop_name, override_text=""):
+            row = layout.row(align=True)
+            sub_left = row.row(align=True)
+            sub_left.scale_x = 2.0
+            if override_text:
+                sub_left.operator(operator, icon=icon, text=override_text)
+            else:
+                sub_left.operator(operator, icon=icon)
+            
+            sub_right = row.row(align=True)
+            sub_right.scale_x = 1.0
+            sub_right.prop(props, prop_name, text="")
+
+        draw_action_row(layout, "node.pbr_connect_arrange", 'NODETREE', "scope_connect", "自动连接贴图")
+        draw_action_row(layout, "node.pbr_clean_nodes", 'TRASH', "scope_clean", "清除无用节点")
+        draw_action_row(layout, "node.pbr_reset_nodes", 'FILE_REFRESH', "scope_reset", "重置材质节点")
+
+
+class NODE_PT_PBRRenamePanel(bpy.types.Panel):
+    bl_label = "命名规则"
+    bl_idname = "NODE_PT_pbr_rename"
+    bl_space_type = 'NODE_EDITOR'
+    bl_region_type = 'UI'
+    bl_category = 'PBR Tool'
+    bl_parent_id = "NODE_PT_pbr_main"
+
+    def draw(self, context):
+        layout = self.layout
+        props = context.scene.pbr_v2_props
+
+        # 命名规则相关的全局开关
+        layout.prop(props, "rename_disk_files", text="同步重命名磁盘贴图文件")
+
+        def draw_action_row(layout, operator, icon, prop_name, override_text=""):
+            row = layout.row(align=True)
+            sub_left = row.row(align=True)
+            sub_left.scale_x = 2.0
+            if override_text:
+                sub_left.operator(operator, icon=icon, text=override_text)
+            else:
+                sub_left.operator(operator, icon=icon)
+
+            sub_right = row.row(align=True)
+            sub_right.scale_x = 1.0
+            sub_right.prop(props, prop_name, text="")
+
+        # 统一的命名规则按钮组（默认折叠）
+        draw_action_row(layout, "node.pbr_rename_mat_from_obj", 'OUTLINER_OB_MESH', "scope_rename", "根据物体重命名材质")
+        draw_action_row(layout, "node.pbr_rename_textures", 'SORT_DESC', "scope_rename", "根据材质球重命名贴图")
+        draw_action_row(layout, "node.pbr_rename_material", 'SORTALPHA', "scope_rename", "根据贴图重命名材质")
+
+class NODE_PT_PBRPreviewPanel(bpy.types.Panel):
+    bl_label = "图像预览"
+    bl_idname = "NODE_PT_pbr_preview"
+    bl_space_type = 'NODE_EDITOR'
+    bl_region_type = 'UI'
+    bl_category = 'PBR Tool'
+    bl_parent_id = "NODE_PT_pbr_main"
+
+    def draw(self, context):
+        layout = self.layout
+        active_node = context.active_node
+        if active_node and active_node.type == 'TEX_IMAGE':
+            img = active_node.image
+            if img:
+                layout.template_ID_preview(active_node, "image", open="image.open")
+                
+                # 图片信息展示扩展
+                box = layout.box()
+                col = box.column(align=True)
+                
+                # 1. 尺寸、色深和格式 (例如: 2048 x 2048, RGB 字节型, sRGB)
+                w, h = img.size
+                depth = img.depth
+                
+                channels = "RGBA" if depth in (32, 64, 128) else "RGB"
+                if img.file_format == 'JPEG':
+                    depth_str = "字节型"
+                else:
+                    depth_str = f"字节型" if depth <= 32 else "浮点型"
+                    
+                colorspace_val = img.colorspace_settings.name
+                info_str = f"{w} × {h}, {channels} {depth_str}, {colorspace_val}"
+                
+                col.label(text=info_str, icon='INFO')
+                
+                col.separator()
+                
+                # 2. 色彩空间下拉框
+                col.prop(img.colorspace_settings, "name", text="色彩空间")
+                
+                # 3. Alpha模式选择
+                col.prop(img, "alpha_mode", text="Alpha")
+                
+            else:
+                layout.label(text="无图像内容", icon='ERROR')
+        else:
+            layout.label(text="在节点树中选中贴图", icon='INFO')
+
+class NODE_PT_PBRCompressPanel(bpy.types.Panel):
+    bl_label = "图像压缩"
+    bl_idname = "NODE_PT_pbr_compress"
+    bl_space_type = 'NODE_EDITOR'
+    bl_region_type = 'UI'
+    bl_category = 'PBR Tool'
+    bl_parent_id = "NODE_PT_pbr_main"
+
+    def draw(self, context):
+        layout = self.layout
+        props = context.scene.pbr_v2_props
+
+        # 暂时隐藏“同步压缩到磁盘”入口，默认只改 Blender 内数据
+        box = layout.box()
+        box.label(text="仅修改当前 Blender 内数据，不影响磁盘原图", icon='CHECKMARK')
+
+        layout.separator()
+        
+        col = layout.column(align=True)
+        col.prop(props, "do_resize", text="启用尺寸压缩")
+        if props.do_resize:
+            col.prop(props, "compression_ratio", slider=True)
+            col.prop(props, "min_resolution")
+        
+        layout.separator()
+        
+        def draw_action_row(layout, operator, icon, prop_name, override_text=""):
+            row = layout.row(align=True)
+            sub_left = row.row(align=True)
+            sub_left.scale_x = 2.0
+            if operator:
+                sub_left.operator(operator, icon=icon, text=override_text)
+            else:
+                sub_left.label(text=override_text, icon=icon)
+            
+            sub_right = row.row(align=True)
+            sub_right.scale_x = 1.0
+            sub_right.prop(props, prop_name, text="")
+
+        draw_action_row(layout, None, 'IMAGE_DATA', "target_format", "格式转换:")
+        draw_action_row(layout, "node.pbr_compress_textures", 'PLAY', "scope_compress", "执行处理")
+        draw_action_row(layout, "node.pbr_export_textures", 'FILE_FOLDER', "scope_export", "打包导出贴图")
+
+        # 仅在已有历史导出路径时显示“一键打开目录”
+        if props.last_export_path:
+            row = layout.row()
+            row.operator("node.pbr_open_export_folder", icon='FILE_FOLDER', text="打开刚才导出的文件夹")
+
+class NODE_PT_PBRBatchPanel(bpy.types.Panel):
+    bl_label = "外部批量导入"
+    bl_idname = "NODE_PT_pbr_batch"
+    bl_space_type = 'NODE_EDITOR'
+    bl_region_type = 'UI'
+    bl_category = 'PBR Tool'
+    bl_parent_id = "NODE_PT_pbr_main"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("node.pbr_batch_folder_connect", icon='FILE_FOLDER')
