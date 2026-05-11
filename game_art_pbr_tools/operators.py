@@ -18,6 +18,82 @@ from .utils import (
     read_disk_image_size,
 )
 
+
+def _export_textures_for_materials_to_dir(context, mats, directory, update_last_path=True):
+    """
+    将材质节点树内引用的贴图写出到 directory。
+    使用当前 Image 数据块名称与内存中的像素（尺寸），与「打包导出贴图」行为一致。
+    返回 (成功张数, 错误信息或 None)
+    """
+    if not directory:
+        return 0, "路径为空"
+    if not os.path.exists(directory):
+        try:
+            os.makedirs(directory)
+        except Exception as e:
+            return 0, str(e)
+
+    images_to_process = collect_images_from_materials(mats)
+    if not images_to_process:
+        return 0, "未找到贴图"
+
+    count = 0
+    for img in images_to_process:
+        if img.source != "FILE" and not img.packed_file:
+            continue
+
+        ext = os.path.splitext(img.name)[1]
+        if not ext:
+            if img.file_format == "JPEG":
+                ext = ".jpg"
+            elif img.file_format == "PNG":
+                ext = ".png"
+            elif img.file_format == "TARGA":
+                ext = ".tga"
+            elif img.file_format == "TIFF":
+                ext = ".tif"
+            elif img.file_format == "BMP":
+                ext = ".bmp"
+            elif img.file_format == "OPEN_EXR":
+                ext = ".exr"
+            else:
+                ext = ".png"
+
+        base_name = os.path.splitext(img.name)[0]
+        export_path = os.path.join(directory, base_name + ext)
+
+        is_exported = False
+        original_filepath = img.filepath
+        original_raw = getattr(img, "filepath_raw", None)
+        real_filepath = bpy.path.abspath(img.filepath) if img.filepath else ""
+
+        try:
+            img.filepath = export_path
+            if original_raw is not None:
+                img.filepath_raw = export_path
+            img.save()
+            is_exported = True
+        except Exception as e:
+            print(f"[PBR Tools] 导出当前图像数据失败 {img.name}: {e}")
+            if real_filepath and os.path.exists(real_filepath):
+                try:
+                    shutil.copy2(real_filepath, export_path)
+                    is_exported = True
+                except Exception as copy_e:
+                    print(f"[PBR Tools] 兜底拷贝失败 {img.name}: {copy_e}")
+        finally:
+            img.filepath = original_filepath
+            if original_raw is not None:
+                img.filepath_raw = original_raw
+
+        if is_exported:
+            count += 1
+
+    if update_last_path and count and hasattr(context.scene, "pbr_v2_props"):
+        context.scene.pbr_v2_props.last_export_path = directory
+    return count, None
+
+
 class NODE_OT_PBRResetNodes(bpy.types.Operator):
     """重置所有节点，只保留原理化BSDF和输出"""
     bl_idname = "node.pbr_reset_nodes"
@@ -173,11 +249,7 @@ class NODE_OT_PBRRenameTextures(bpy.types.Operator):
     bl_label = "根据材质重命名贴图"
     bl_options = {'REGISTER', 'UNDO'}
 
-    def execute(self, context):
-        if not context.active_object:
-            self.report({'WARNING'}, "请先选择一个物体")
-            return {'CANCELLED'}
-
+    def _execute_rename(self, context, sync_disk_files=False):
         props = context.scene.pbr_v2_props
         scope = props.scope_rename
         mats = get_target_materials(context, scope)
@@ -185,16 +257,57 @@ class NODE_OT_PBRRenameTextures(bpy.types.Operator):
             self.report({'WARNING'}, "未找到可操作的材质")
             return {'CANCELLED'}
 
-        mat_count = 0
-        tex_count = 0
-        for mat in mats:
-            renamed = process_rename_textures_from_material(mat, props)
-            if renamed > 0:
-                mat_count += 1
+        original_sync_flag = bool(getattr(props, "rename_disk_files", False))
+        props.rename_disk_files = bool(sync_disk_files)
+        try:
+            mat_count = 0
+            tex_count = 0
+            disk_count = 0
+            pixel_count = 0
+            for mat in mats:
+                renamed, disk_renamed, disk_px = process_rename_textures_from_material(
+                    mat, props, context.scene
+                )
+                if renamed > 0 or disk_renamed > 0 or disk_px > 0:
+                    mat_count += 1
                 tex_count += renamed
+                disk_count += disk_renamed
+                pixel_count += disk_px
+        finally:
+            props.rename_disk_files = original_sync_flag
 
-        self.report({'INFO'}, f"完成：{mat_count} 个材质，重命名 {tex_count} 张贴图")
-        return {'FINISHED'}
+        if sync_disk_files:
+            self.report(
+                {"INFO"},
+                f"完成（含磁盘同步）：{mat_count} 个材质，数据块重命名 {tex_count} 张，磁盘重命名 {disk_count} 个，分辨率写回 {pixel_count} 张",
+            )
+        else:
+            self.report(
+                {"INFO"},
+                f"完成：{mat_count} 个材质，重命名 {tex_count} 张贴图",
+            )
+        return {"FINISHED"}
+
+    def execute(self, context):
+        if not context.active_object:
+            self.report({'WARNING'}, "请先选择一个物体")
+            return {'CANCELLED'}
+
+        return self._execute_rename(context, sync_disk_files=False)
+
+
+class NODE_OT_PBRRenameTexturesSyncDisk(bpy.types.Operator):
+    """根据材质球名称重命名贴图，并同步重命名磁盘文件及路径"""
+    bl_idname = "node.pbr_rename_textures_sync_disk"
+    bl_label = "根据材质重命名并同步磁盘"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        if not context.active_object:
+            self.report({'WARNING'}, "请先选择一个物体")
+            return {'CANCELLED'}
+
+        return NODE_OT_PBRRenameTextures._execute_rename(self, context, sync_disk_files=True)
 
 class NODE_OT_PBRBatchFolderConnect(bpy.types.Operator):
     """选择贴图文件夹，自动匹配选中的所有物体的材质并连接贴图"""
@@ -506,87 +619,98 @@ class NODE_OT_PBRExportTextures(bpy.types.Operator):
 
     def execute(self, context):
         if not self.directory:
-            return {'CANCELLED'}
-        
-        if not context.active_object and context.scene.pbr_v2_props.scope_export == 'SELECTED':
-            self.report({'WARNING'}, "请先选择一个物体")
-            return {'CANCELLED'}
-        
-        if not os.path.exists(self.directory):
-            try:
-                os.makedirs(self.directory)
-            except Exception as e:
-                self.report({'ERROR'}, f"无法创建特定目录: {e}")
-                return {'CANCELLED'}
+            return {"CANCELLED"}
+
+        if not context.active_object and context.scene.pbr_v2_props.scope_export == "SELECTED":
+            self.report({"WARNING"}, "请先选择一个物体")
+            return {"CANCELLED"}
 
         scope = context.scene.pbr_v2_props.scope_export
-        if scope == 'SELECTED':
-            mats = get_compress_target_materials(context, 'ALL')
+        if scope == "SELECTED":
+            mats = get_compress_target_materials(context, "ALL")
             if not mats and context.active_object:
-                mats = get_compress_target_materials(context, 'CURRENT')
+                mats = get_compress_target_materials(context, "CURRENT")
         else:
             mats = list(bpy.data.materials)
 
         if not mats:
-            self.report({'WARNING'}, "未找到可供操作的材质")
-            return {'CANCELLED'}
+            self.report({"WARNING"}, "未找到可供操作的材质")
+            return {"CANCELLED"}
 
-        images_to_process = collect_images_from_materials(mats)
+        count, err = _export_textures_for_materials_to_dir(
+            context, mats, self.directory, update_last_path=True
+        )
+        if err == "未找到贴图":
+            self.report({"WARNING"}, "目标材质中未找到 Image Texture 节点")
+            return {"CANCELLED"}
+        if count == 0:
+            self.report(
+                {"WARNING"},
+                "没有可导出的贴图（需为外部文件或已打包图像）",
+            )
+            return {"CANCELLED"}
 
-        if not images_to_process:
-            self.report({'WARNING'}, "目标材质中未找到 Image Texture 节点")
-            return {'CANCELLED'}
+        self.report({"INFO"}, f"成功向目标目录打出了 {count} 张关联贴图!")
+        return {"FINISHED"}
 
-        count = 0
-        for img in images_to_process:
-            if img.source != 'FILE' and not img.packed_file:
-                continue
-                
-            ext = os.path.splitext(img.name)[1]
-            if not ext:
-                if img.file_format == 'JPEG': ext = '.jpg'
-                elif img.file_format == 'PNG': ext = '.png'
-                elif img.file_format == 'TARGA': ext = '.tga'
-                elif img.file_format == 'TIFF': ext = '.tif'
-                elif img.file_format == 'BMP': ext = '.bmp'
-                elif img.file_format == 'OPEN_EXR': ext = '.exr'
-                else: ext = '.png'
-            
-            base_name = os.path.splitext(img.name)[0]
-            export_path = os.path.join(self.directory, base_name + ext)
-            
-            is_exported = False
-            original_filepath = img.filepath
-            original_raw = getattr(img, "filepath_raw", None)
-            real_filepath = bpy.path.abspath(img.filepath) if img.filepath else ""
 
-            # 优先导出当前 Blender 中的图像数据（包含压缩后尺寸），避免回退到原图尺寸
-            try:
-                img.filepath = export_path
-                if original_raw is not None:
-                    img.filepath_raw = export_path
-                img.save()
-                is_exported = True
-            except Exception as e:
-                print(f"[PBR Tools] 导出当前图像数据失败 {img.name}: {e}")
-                if real_filepath and os.path.exists(real_filepath):
-                    try:
-                        shutil.copy2(real_filepath, export_path)
-                        is_exported = True
-                    except Exception as copy_e:
-                        print(f"[PBR Tools] 兜底拷贝失败 {img.name}: {copy_e}")
-            finally:
-                img.filepath = original_filepath
-                if original_raw is not None:
-                    img.filepath_raw = original_raw
-                    
-            if is_exported:
-                count += 1
+class NODE_OT_PBRExportCurrentTextures(bpy.types.Operator):
+    """
+    导出当前选中/活动物体上材质所连贴图：文件名与当前 Image 名一致，像素与当前内存一致。
+    范围由「贴图导入导出」面板的 当前/全部 下拉（scope_rename）控制。
+    """
 
-        # 记录本次成功导出的目标目录，供“一键打开导出文件夹”使用
-        context.scene.pbr_v2_props.last_export_path = self.directory
-        self.report({'INFO'}, f"成功向目标目录打出了 {count} 张关联贴图!")
-        return {'FINISHED'}
+    bl_idname = "node.pbr_export_current_textures"
+    bl_label = "导出当前修改贴图"
+    bl_options = {"REGISTER"}
+
+    directory: StringProperty(
+        name="保存路径",
+        description="选择要保存贴图的目录",
+        subtype="DIR_PATH",
+    )
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        if not self.directory:
+            return {"CANCELLED"}
+
+        props = context.scene.pbr_v2_props
+        mode = props.scope_rename
+
+        if not context.active_object:
+            self.report({"WARNING"}, "请先选择一个物体")
+            return {"CANCELLED"}
+
+        if mode == "CURRENT":
+            mats = get_compress_target_materials(context, "CURRENT")
+        else:
+            mats = get_compress_target_materials(context, "ALL")
+            if not mats and context.active_object:
+                mats = get_compress_target_materials(context, "CURRENT")
+
+        if not mats:
+            self.report({"WARNING"}, "未找到可供操作的材质")
+            return {"CANCELLED"}
+
+        count, err = _export_textures_for_materials_to_dir(
+            context, mats, self.directory, update_last_path=True
+        )
+        if err and count == 0:
+            self.report({"WARNING"}, "未找到可导出的贴图（请确认材质中有图像节点，且非纯程序贴图）")
+            return {"CANCELLED"}
+        if count == 0:
+            self.report(
+                {"WARNING"},
+                "没有成功导出任何贴图（可能均为程序纹或无打包/文件来源）",
+            )
+            return {"CANCELLED"}
+
+        self.report({"INFO"}, f"已导出 {count} 张贴图（当前命名与尺寸）")
+        return {"FINISHED"}
 
 
 class NODE_OT_PBROpenExportFolder(bpy.types.Operator):

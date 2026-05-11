@@ -52,8 +52,8 @@ class NODE_PT_PBRRenamePanel(bpy.types.Panel):
         layout = self.layout
         props = context.scene.pbr_v2_props
 
-        # 命名规则相关的全局开关
-        layout.prop(props, "rename_disk_files", text="同步重命名磁盘贴图文件")
+        tip = layout.box()
+        tip.label(text="贴图命名可能是自定义，建议以贴图名同步材质。", icon='INFO')
 
         def draw_action_row(layout, operator, icon, prop_name, override_text=""):
             row = layout.row(align=True)
@@ -70,8 +70,8 @@ class NODE_PT_PBRRenamePanel(bpy.types.Panel):
 
         # 统一的命名规则按钮组（默认折叠）
         draw_action_row(layout, "node.pbr_rename_mat_from_obj", 'OUTLINER_OB_MESH', "scope_rename", "根据物体重命名材质")
-        draw_action_row(layout, "node.pbr_rename_textures", 'SORT_DESC', "scope_rename", "根据材质球重命名贴图")
-        draw_action_row(layout, "node.pbr_rename_material", 'SORTALPHA', "scope_rename", "根据贴图重命名材质")
+        draw_action_row(layout, "node.pbr_rename_textures", 'SORT_DESC', "scope_rename", "基于材质球命名贴图")
+        draw_action_row(layout, "node.pbr_rename_material", 'SORTALPHA', "scope_rename", "贴图命名同步至材质")
 
 class NODE_PT_PBRPreviewPanel(bpy.types.Panel):
     bl_label = "图像预览"
@@ -170,7 +170,7 @@ class NODE_PT_PBRCompressPanel(bpy.types.Panel):
             row.operator("node.pbr_open_export_folder", icon='FILE_FOLDER', text="打开刚才导出的文件夹")
 
 class NODE_PT_PBRBatchPanel(bpy.types.Panel):
-    bl_label = "外部批量导入"
+    bl_label = "贴图导入导出"
     bl_idname = "NODE_PT_pbr_batch"
     bl_space_type = 'NODE_EDITOR'
     bl_region_type = 'UI'
@@ -179,4 +179,18 @@ class NODE_PT_PBRBatchPanel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.operator("node.pbr_batch_folder_connect", icon='FILE_FOLDER')
+        props = context.scene.pbr_v2_props
+
+        def draw_action_row(layout, operator, icon, prop_name, override_text=""):
+            row = layout.row(align=True)
+            sub_left = row.row(align=True)
+            sub_left.scale_x = 2.0
+            sub_left.operator(operator, icon=icon, text=override_text)
+
+            sub_right = row.row(align=True)
+            sub_right.scale_x = 1.0
+            sub_right.prop(props, prop_name, text="")
+
+        draw_action_row(layout, "node.pbr_batch_folder_connect", 'FILE_FOLDER', "scope_connect", "基于名称匹配文件夹贴图")
+        draw_action_row(layout, "node.pbr_export_current_textures", 'EXPORT', "scope_rename", "导出当前修改贴图")
+        draw_action_row(layout, "node.pbr_rename_textures_sync_disk", 'FILE_TICK', "scope_rename", "同步当前修改贴图至磁盘")

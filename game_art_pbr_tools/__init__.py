@@ -34,9 +34,11 @@ classes = (
     operators.NODE_OT_PBRRenameMaterial,
     operators.NODE_OT_PBRRenameMaterialFromObject,
     operators.NODE_OT_PBRRenameTextures,
+    operators.NODE_OT_PBRRenameTexturesSyncDisk,
     operators.NODE_OT_PBRResetNodes,
     operators.NODE_OT_PBRCompressTextures,
     operators.NODE_OT_PBRExportTextures,
+    operators.NODE_OT_PBRExportCurrentTextures,
     operators.NODE_OT_PBROpenExportFolder,
     operators.NODE_OT_PBRBatchFolderConnect,
     

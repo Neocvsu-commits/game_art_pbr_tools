@@ -60,6 +60,8 @@ PBR 贴图助手 (Game Art PBR Tools v2.3)。
 - `RMA`：`R=Roughness`，`G=Metallic`
 - 独立 `AO`：通过乘法叠加到底色链路
 
+glTF / GLB 导入后，遮挡常表现为 **`Image`（Non-Color）→ `Separate Color` → 红 → glTF Material Output 的 Occlusion**；与上述 ORM 的 R 通道含义一致。逆向重命名时：若同一张图已按绿/蓝走完整 ORM，则仍命名为 `_ORM`；仅红接 Occlusion、未形成完整 ORM 时才推断为 `_AO`（见「根据材质球重命名贴图」）。
+
 如果已启用 Blender 自带 `Node Arrange`，会优先调用它完成排版。
 
 #### 清除无用节点
@@ -81,14 +83,19 @@ PBR 贴图助手 (Game Art PBR Tools v2.3)。
 #### 根据材质球重命名贴图
 
 把贴图数据名重命名到团队格式（默认只改 Blender 内部 `Image` 名称）。  
-常用规则：
+贴图基底名由**当前材质名**推导：`M_xxx` → `T_xxx`，再按下面规则拼后缀。
 
-- `M_Weapon` / `m_Weapon` / `Weapon` -> `T_Weapon`
-- `Base Color` -> `_D`
-- `Normal` -> `_N`
-- `Roughness` -> `_R`
-- `ORM` -> `_ORM`
-- `Metallic` 单图 -> `_M`
+**后缀由节点连接推断**（从 `Image Texture` 的输出沿链路追踪），与 glTF/GLB 导入后的常见结构兼容：
+
+| 推断后缀 | 连接含义（简化） |
+| -------- | ---------------- |
+| `_ORM` | 经 `Separate Color` 后，**绿** 接到 Principled **Roughness**、**蓝** 接到 **Metallic**（标准 ORM / ARM）。此时即使 **红** 仍接到 glTF **Occlusion**，也一律按 **ORM 整张贴图** 命名，后缀仍为 `_ORM`。 |
+| `_AO` | **仅**红通道经 `Separate Color` 后接到外置 **Occlusion**（如 **glTF Material Output** 的 Occlusion 槽），且**未**同时满足上表「绿 + 蓝」的完整 ORM 连接；**或** 贴图 **Color 直连** 到 `Occlusion`（独立遮挡贴图）。 |
+| `_D` / `_N` / `_R` / `_M` | 分别对应 Base Color、Normal（经 Normal Map）、Roughness、Metallic 等直连或可追溯链路。 |
+
+**多用途时的优先级**（同一张图被推断出多种用途时取其一）：`_ORM` → `_AO` → `_N` → `_D` → `_R` → `_M`。
+
+**文件名识别（自动连接 / 从贴图反推材质名）**：ORM 除 `_orm`、`_arm`、`_ao_r_m` 外，支持 glTF 导入常见的 **`_orm_0`、`_orm_1`**（`_orm_` + 数字）等形式。
 
 会保留原扩展名（如 `.png`、`.tga`、`.exr`）。未识别到有效通道的图会跳过。
 
@@ -134,11 +141,11 @@ PBR 贴图助手 (Game Art PBR Tools v2.3)。
 | Roughness  | `_r`, `_roughness`, `_rough`, `_rgh`                    |
 | Metallic   | `_m`, `_metallic`, `_metal`, `_met`                     |
 | AO         | `_ao`, `_ambientocclusion`, `_occlusion`                |
-| ORM/ARM    | `_orm`, `_arm`, `_ao_r_m`                               |
+| ORM/ARM    | `_orm`, `_orm_0`, `_orm_1`, …（`_orm_` + 数字）, `_arm`, `_ao_r_m` |
 | RMA        | `_rma`                                                  |
 
 
-识别时不区分大小写，但团队交付建议统一输出大写后缀（`_D`、`_N`、`_R`、`_ORM`）。
+识别时不区分大小写，但团队交付建议统一输出大写后缀（`_D`、`_N`、`_R`、`_ORM`、`_AO` 等）。
 
 ## 限制与边界情况（查表）
 
@@ -150,7 +157,7 @@ PBR 贴图助手 (Game Art PBR Tools v2.3)。
 | 重置材质节点     | 删除原有复杂节点网络（可 `Ctrl+Z`）                                      | 该功能目标是回到白板状态，便于重建标准链路         |
 | 执行处理（压缩）   | 必须先开启 `自动打包资源`                                              | 关闭时可能直接影响磁盘原图，插件强制安全模式避免误改原文件 |
 | 打包导出贴图     | 会在磁盘创建文件，不能靠 `Ctrl+Z` 撤销                                    | 文件系统写入不属于 Blender 的撤销栈        |
-| 根据材质球重命名贴图 | 默认仅改 `Image Datablock` 名称，不改磁盘文件名                           | 保持现有资源路径稳定，避免外部工程引用断链         |
+| 根据材质球重命名贴图 | 默认仅改 `Image` 数据块名、不改磁盘路径（除非开启同步重命名）；后缀由**连接推断**（含 `Occlusion`、`Separate Color` 等），`_ORM` / `_AO` 区分规则见上文 | 防路径断链；与 glTF 导入及团队后缀一致 |
 | 范围选项       | `贴图连接` 面板中的 `全部` = 所选物体材质；导出中的 `全场景` = `bpy.data.materials` | 两处范围定义不同，分别对应局部处理和全局导出需求      |
 
 

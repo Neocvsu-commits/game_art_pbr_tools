@@ -1,5 +1,6 @@
 import bpy
 import os
+import re
 import tempfile
 
 # --- 全局配置 ---
@@ -34,6 +35,26 @@ def check_suffix(clean_name_lower, suffixes):
         if clean_name_lower.endswith(s):
             return s
     return None
+
+
+def match_orm_filename_suffix(name_lower):
+    """
+    ORM 贴图文件名：标准后缀或 glTF 导入常见的 _orm_0、_orm_12（与 _AO 命名成对替换时同一套基底）。
+    """
+    s = check_suffix(name_lower, SUFFIX_MAP['ORM'])
+    if s:
+        return s
+    m = re.search(r'_orm_\d+$', name_lower)
+    if m:
+        return m.group(0)
+    return None
+
+
+def is_pbr_texture_name_lower(name_lower):
+    """是否属于本工具识别的 PBR 贴图命名（含 glTF 的 _orm_N）。"""
+    if any(check_suffix(name_lower, sfx) for sfx in SUFFIX_MAP.values()):
+        return True
+    return match_orm_filename_suffix(name_lower) is not None
 
 
 def _force_claim_name(datablocks, current, target_name):
@@ -89,7 +110,7 @@ def connect_pbr_nodes(nodes, links, principled_node, image_nodes):
             # 团队规范：_D（基础色）不再自动连接 Alpha，避免影响 GLB 导出。
             # 如需透明效果，由美术手动判定并连接。
 
-        elif check_suffix(name_lower, SUFFIX_MAP['ORM']):
+        elif match_orm_filename_suffix(name_lower):
             try: img_node.image.colorspace_settings.name = 'Non-Color'
             except: pass
             sep_node = None
@@ -546,7 +567,7 @@ def process_connect_and_arrange(mat, context=None):
         if not img_node.image: continue
         name_lower = get_clean_name_for_search(img_node.image.name)
         # 仅当它是我们需要管理的 PBR 贴图时，才由我们接管其连接
-        is_pbr = any(check_suffix(name_lower, suffixes) for suffixes in SUFFIX_MAP.values())
+        is_pbr = is_pbr_texture_name_lower(name_lower)
         if is_pbr:
             for out in img_node.outputs:
                 if out.is_linked:
@@ -603,7 +624,11 @@ def process_connect_and_arrange(mat, context=None):
         pos_set = False
         img_node.location.x = base_x
         for type_key, suffixes in SUFFIX_MAP.items():
-            if check_suffix(name_lower, suffixes):
+            if type_key == 'ORM':
+                matched = match_orm_filename_suffix(name_lower)
+            else:
+                matched = check_suffix(name_lower, suffixes)
+            if matched:
                 img_node.location.y = loc_y_map.get(type_key, principled_node.location.y)
                 pos_set = True
                 break
@@ -703,12 +728,17 @@ def process_rename_material(mat):
             current_priority = 2
         
         if not matched_suffix:
-            for key in ['ORM', 'RMA', 'NORMAL']:
-                s = check_suffix(name_lower, SUFFIX_MAP[key])
-                if s:
-                    matched_suffix = s
-                    current_priority = 1
-                    break
+            orm_s = match_orm_filename_suffix(name_lower)
+            if orm_s:
+                matched_suffix = orm_s
+                current_priority = 1
+            else:
+                for key in ['RMA', 'NORMAL']:
+                    s = check_suffix(name_lower, SUFFIX_MAP[key])
+                    if s:
+                        matched_suffix = s
+                        current_priority = 1
+                        break
         
         if matched_suffix and current_priority > best_priority:
             suffix_len = len(matched_suffix)
@@ -862,6 +892,29 @@ def _is_socket_reaching_principled_input(output_socket, input_name, visited_link
     return False
 
 
+def _is_socket_reaching_gltf_occlusion(output_socket, visited_links):
+    """
+    递归判断输出是否最终连到 glTF Material Output（或同类）的 Occlusion 槽，
+    与 GLB 导入常见的 ORM：Separate Color 的 Red → Occlusion 一致。
+    """
+    for link in output_socket.links:
+        link_key = _make_link_key(link)
+        if link_key in visited_links:
+            continue
+        visited_links.add(link_key)
+
+        to_node = link.to_node
+        to_socket = link.to_socket
+
+        if to_socket and to_socket.name == 'Occlusion':
+            return True
+
+        for out_sock in to_node.outputs:
+            if out_sock.is_linked and _is_socket_reaching_gltf_occlusion(out_sock, visited_links):
+                return True
+    return False
+
+
 def _trace_usage_suffixes_from_socket(output_socket, visited_links):
     """
     从图像节点某个输出出发，追踪最终用途并返回命名后缀集合。
@@ -886,6 +939,10 @@ def _trace_usage_suffixes_from_socket(output_socket, visited_links):
                 found.add('_M')
             continue
 
+        if to_socket and to_socket.name == 'Occlusion':
+            found.add('_AO')
+            continue
+
         # 通过 Normal Map 连 Principled.Normal
         if to_node.type == 'NORMAL_MAP' and to_socket.name == 'Color':
             normal_out = to_node.outputs.get('Normal')
@@ -894,7 +951,8 @@ def _trace_usage_suffixes_from_socket(output_socket, visited_links):
                     found.add('_N')
             continue
 
-        # 通过 SeparateColor 做 ORM 复合图推断
+        # Separate Color：绿→Roughness 且 蓝→Metallic 时视为完整 ORM，命名始终 _ORM（红仍可接 Occlusion）。
+        # 仅当「只有红通道」接到外置 Occlusion（如 glTF Material Output）且未形成上述 ORM 时，才按 _AO 命名。
         if to_node.type == 'SEPARATE_COLOR' and to_socket.name == 'Color':
             has_rough = False
             has_metal = False
@@ -903,13 +961,17 @@ def _trace_usage_suffixes_from_socket(output_socket, visited_links):
                     has_rough = True
                 if _is_socket_reaching_principled_input(out_socket, 'Metallic', set(visited_links)):
                     has_metal = True
-            if has_rough and has_metal:
+            red_out = to_node.outputs.get('Red')
+            is_full_orm = has_rough and has_metal
+            if is_full_orm:
                 found.add('_ORM')
-                continue
-            if has_rough:
-                found.add('_R')
-            if has_metal:
-                found.add('_M')
+            elif red_out and _is_socket_reaching_gltf_occlusion(red_out, set(visited_links)):
+                found.add('_AO')
+            if not is_full_orm:
+                if has_rough:
+                    found.add('_R')
+                if has_metal:
+                    found.add('_M')
             continue
 
         # 其他中间节点：继续向后递归追踪
@@ -920,20 +982,42 @@ def _trace_usage_suffixes_from_socket(output_socket, visited_links):
     return found
 
 
-def process_rename_textures_from_material(mat, props=None):
+def _image_needs_pixel_flush_to_disk(image, abs_path: str) -> bool:
     """
-    根据材质球名称逆向重命名连接贴图（仅重命名 Image Datablock 名称，不改磁盘文件）。
+    判断当前内存中的 Image（含 scale 后分辨率）是否需覆盖写入磁盘文件。
+    与压缩面板的 _pbr_unsynced_resize 标记及磁盘/内存尺寸比较一致。
+    """
+    if not image:
+        return False
+    if not abs_path or not os.path.isfile(abs_path):
+        return bool(image.get("_pbr_unsynced_resize"))
+    if not ensure_image_pixels_loaded(image):
+        return bool(image.get("_pbr_unsynced_resize"))
+    if image.get("_pbr_unsynced_resize"):
+        return True
+    ds = read_disk_image_size(abs_path)
+    if not ds:
+        return True
+    w, h = int(image.size[0]), int(image.size[1])
+    return ds[0] != w or ds[1] != h
+
+
+def process_rename_textures_from_material(mat, props=None, scene=None):
+    """
+    根据材质球名称逆向重命名连接贴图。
+    返回 (数据块重命名张数, 磁盘文件重命名次数, 将内存像素写回磁盘的张数)；
+    未开启磁盘同步时后两项恒为 0。
     """
     if not mat or not mat.use_nodes or not mat.node_tree:
-        return 0
+        return 0, 0, 0
 
     base_name = _build_texture_base_name_from_material_name(mat.name)
     image_nodes = [n for n in mat.node_tree.nodes if n.type == 'TEX_IMAGE' and n.image]
     if not image_nodes:
-        return 0
+        return 0, 0, 0
 
-    # 优先级：ORM > Normal > BaseColor > Roughness > Metallic
-    suffix_priority = ['_ORM', '_N', '_D', '_R', '_M']
+    # 优先级：ORM > AO（仅红→外置 Occlusion 且无完整 ORM 时）> Normal > BaseColor > Roughness > Metallic
+    suffix_priority = ['_ORM', '_AO', '_N', '_D', '_R', '_M']
     image_to_suffixes = {}
 
     for img_node in image_nodes:
@@ -956,6 +1040,8 @@ def process_rename_textures_from_material(mat, props=None):
         image_to_suffixes[img].update(usage_suffixes)
 
     renamed_count = 0
+    disk_renamed_count = 0
+    disk_pixels_flushed = 0
     for img, suffixes in image_to_suffixes.items():
         chosen_suffix = None
         for s in suffix_priority:
@@ -972,38 +1058,55 @@ def process_rename_textures_from_material(mat, props=None):
             if _force_claim_name(bpy.data.images, img, new_name):
                 renamed_count += 1
 
-        # 可选：同步重命名磁盘上的贴图文件，并更新路径
+        # 可选：同步磁盘文件（重命名路径 + 将内存中当前像素/尺寸写回文件，继承压缩/缩放结果）
         if props is not None and getattr(props, "rename_disk_files", False):
             try:
                 old_path = bpy.path.abspath(img.filepath) if img.filepath else ""
             except Exception:
                 old_path = ""
 
-            if old_path and os.path.isfile(old_path):
-                dir_path = os.path.dirname(old_path)
-                # 目标基础文件名（不含目录）
-                target_filename = f"{new_base_filename}{ext}"
-                target_path = os.path.join(dir_path, target_filename)
+            if not (old_path and os.path.isfile(old_path)):
+                continue
 
-                # 若目标已存在，则追加序号避免覆盖
-                final_path = target_path
-                if os.path.exists(final_path) and os.path.normpath(final_path) != os.path.normpath(old_path):
-                    base_no_ext, _ = os.path.splitext(new_base_filename)
-                    idx = 1
-                    while True:
-                        candidate_filename = f"{base_no_ext}_{idx}{ext}"
-                        candidate_path = os.path.join(dir_path, candidate_filename)
-                        if not os.path.exists(candidate_path):
-                            final_path = candidate_path
-                            break
-                        idx += 1
+            dir_path = os.path.dirname(old_path)
+            target_filename = f"{new_base_filename}{ext}"
+            target_path = os.path.join(dir_path, target_filename)
 
-                if os.path.normpath(final_path) != os.path.normpath(old_path):
+            final_path = target_path
+            if os.path.exists(final_path) and os.path.normpath(final_path) != os.path.normpath(old_path):
+                base_no_ext, _ = os.path.splitext(new_base_filename)
+                idx = 1
+                while True:
+                    candidate_filename = f"{base_no_ext}_{idx}{ext}"
+                    candidate_path = os.path.join(dir_path, candidate_filename)
+                    if not os.path.exists(candidate_path):
+                        final_path = candidate_path
+                        break
+                    idx += 1
+
+            did_rename = os.path.normpath(final_path) != os.path.normpath(old_path)
+            if did_rename:
+                try:
+                    os.rename(old_path, final_path)
+                    img.filepath = final_path
+                    raws = getattr(img, "filepath_raw", None)
+                    if raws is not None:
+                        img.filepath_raw = final_path
+                    disk_renamed_count += 1
+                except Exception as e:
+                    print(f"[PBR Tools] 重命名磁盘贴图失败 {img.name}: {e}")
+                    continue
+            else:
+                final_path = old_path
+
+            # 将内存中当前贴图写回 final_path：覆盖「仅 os.rename 未改像素」与「压缩后未同步到磁盘」两种情况
+            if _image_needs_pixel_flush_to_disk(img, final_path):
+                if save_image_to_path_verified(img, final_path, scene):
+                    disk_pixels_flushed += 1
                     try:
-                        os.rename(old_path, final_path)
-                        # 统一保留绝对路径，避免后续同步压缩在未保存/跨目录场景下路径失效
-                        img.filepath = final_path
-                    except Exception as e:
-                        print(f"[PBR Tools] 重命名磁盘贴图失败 {img.name}: {e}")
+                        if "_pbr_unsynced_resize" in img:
+                            del img["_pbr_unsynced_resize"]
+                    except Exception:
+                        pass
 
-    return renamed_count
+    return renamed_count, disk_renamed_count, disk_pixels_flushed
