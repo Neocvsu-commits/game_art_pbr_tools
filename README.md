@@ -1,7 +1,7 @@
 # Game Art PBR Tools（PBR贴图工具）团队内部使用文档
 
 为解决日常 PBR 材质制作与贴图管理中高频、重复的节点连线、命名、清理等繁琐操作，我们开发了
-PBR 贴图助手 (Game Art PBR Tools v2.3)。
+PBR 贴图助手 (Game Art PBR Tools v2.4)。
 它能一键完成贴图自动连线、智能重命名、无用节点清理、批量导入以及图像压缩与格式转换，大幅提
 升团队场景、⻆色、道具材质管线的构建效率与整洁度。
 
@@ -41,7 +41,7 @@ PBR 贴图助手 (Game Art PBR Tools v2.3)。
 
 ## 基本信息
 
-- 插件版本：`2.3.0`（正式版，`bl_info.version = (2, 3, 0)`）  
+- 插件版本：`2.3.0`（正式版，`bl_info.version = (2, 4, 0)`）  
 - 支持版本：Blender `3.4.0+`  
 - 入口位置：`Shader Editor` -> 侧栏（`N`）-> `PBR Tool`
 
@@ -91,9 +91,10 @@ glTF / GLB 导入后，遮挡常表现为 **`Image`（Non-Color）→ `Separate 
 | -------- | ---------------- |
 | `_ORM` | 经 `Separate Color` 后，**绿** 接到 Principled **Roughness**、**蓝** 接到 **Metallic**（标准 ORM / ARM）。此时即使 **红** 仍接到 glTF **Occlusion**，也一律按 **ORM 整张贴图** 命名，后缀仍为 `_ORM`。 |
 | `_AO` | **仅**红通道经 `Separate Color` 后接到外置 **Occlusion**（如 **glTF Material Output** 的 Occlusion 槽），且**未**同时满足上表「绿 + 蓝」的完整 ORM 连接；**或** 贴图 **Color 直连** 到 `Occlusion`（独立遮挡贴图）。 |
+| `_Alpha` | 连接至 Principled BSDF 的 Alpha 输入（单独 _Alpha 贴图会自动连接；_D 贴图的 alpha 通道不会自动推断）。 |
 | `_D` / `_N` / `_R` / `_M` | 分别对应 Base Color、Normal（经 Normal Map）、Roughness、Metallic 等直连或可追溯链路。 |
 
-**多用途时的优先级**（同一张图被推断出多种用途时取其一）：`_ORM` → `_AO` → `_N` → `_D` → `_R` → `_M`。
+**多用途时的优先级**（同一张图被推断出多种用途时取其一）：`_ORM` → `_AO` → `_N` → `_D` → `_Alpha` → `_R` → `_M`。
 
 **文件名识别（自动连接 / 从贴图反推材质名）**：ORM 除 `_orm`、`_arm`、`_ao_r_m` 外，支持 glTF 导入常见的 **`_orm_0`、`_orm_1`**（`_orm_` + 数字）等形式。
 
@@ -141,6 +142,7 @@ glTF / GLB 导入后，遮挡常表现为 **`Image`（Non-Color）→ `Separate 
 | Roughness  | `_r`, `_roughness`, `_rough`, `_rgh`                    |
 | Metallic   | `_m`, `_metallic`, `_metal`, `_met`                     |
 | AO         | `_ao`, `_ambientocclusion`, `_occlusion`                |
+| Alpha      | `_alpha`, `_opacity`, `_a`                              |
 | ORM/ARM    | `_orm`, `_orm_0`, `_orm_1`, …（`_orm_` + 数字）, `_arm`, `_ao_r_m` |
 | RMA        | `_rma`                                                  |
 
@@ -159,5 +161,7 @@ glTF / GLB 导入后，遮挡常表现为 **`Image`（Non-Color）→ `Separate 
 | 打包导出贴图     | 会在磁盘创建文件，不能靠 `Ctrl+Z` 撤销                                    | 文件系统写入不属于 Blender 的撤销栈        |
 | 根据材质球重命名贴图 | 默认仅改 `Image` 数据块名、不改磁盘路径（除非开启同步重命名）；后缀由**连接推断**（含 `Occlusion`、`Separate Color` 等），`_ORM` / `_AO` 区分规则见上文 | 防路径断链；与 glTF 导入及团队后缀一致 |
 | 范围选项       | `贴图连接` 面板中的 `全部` = 所选物体材质；导出中的 `全场景` = `bpy.data.materials` | 两处范围定义不同，分别对应局部处理和全局导出需求      |
+
+
 
 

@@ -11,7 +11,8 @@ SUFFIX_MAP = {
     'NORMAL': ['_n', '_nor', '_normal', '_nrm'],
     'ROUGHNESS': ['_r', '_roughness', '_rough', '_rgh'],
     'METALLIC': ['_m', '_metallic', '_metal', '_met'],
-    'AO': ['_ao', '_ambientocclusion', '_occlusion']
+    'AO': ['_ao', '_ambientocclusion', '_occlusion'],
+    'ALPHA': ['_alpha', '_opacity', '_a']
 }
 
 def get_clean_name_for_search(image_name):
@@ -232,6 +233,13 @@ def connect_pbr_nodes(nodes, links, principled_node, image_nodes):
                 in2 = mix_node.inputs.get('Color2') or mix_node.inputs.get('B')
                 if not in2 and len(mix_node.inputs) > 2: in2 = mix_node.inputs[2]
                 if in2: links.new(img_node.outputs['Color'], in2)
+
+        elif check_suffix(name_lower, SUFFIX_MAP['ALPHA']):
+            try: img_node.image.colorspace_settings.name = 'Non-Color'
+            except: pass
+            target_socket = principled_node.inputs.get('Alpha')
+            if target_socket:
+                links.new(img_node.outputs['Color'], target_socket)
 
 
 def get_target_materials(context, scope):
@@ -590,7 +598,8 @@ def process_connect_and_arrange(mat, context=None):
         'ORM': base_y - y_spacing * 2,
         'RMA': base_y - y_spacing * 2,
         'NORMAL': base_y - y_spacing * 3,
-        'AO': base_y - y_spacing * 4
+        'AO': base_y - y_spacing * 4,
+        'ALPHA': base_y - y_spacing * 5
     }
     
     intermediate_x = principled_node.location.x - 260
@@ -733,7 +742,7 @@ def process_rename_material(mat):
                 matched_suffix = orm_s
                 current_priority = 1
             else:
-                for key in ['RMA', 'NORMAL']:
+                for key in ['RMA', 'NORMAL', 'ALPHA']:
                     s = check_suffix(name_lower, SUFFIX_MAP[key])
                     if s:
                         matched_suffix = s
@@ -937,6 +946,8 @@ def _trace_usage_suffixes_from_socket(output_socket, visited_links):
                 found.add('_R')
             elif to_socket.name == 'Metallic':
                 found.add('_M')
+            elif to_socket.name == 'Alpha':
+                found.add('_Alpha')
             continue
 
         if to_socket and to_socket.name == 'Occlusion':
@@ -1017,7 +1028,7 @@ def process_rename_textures_from_material(mat, props=None, scene=None):
         return 0, 0, 0
 
     # 优先级：ORM > AO（仅红→外置 Occlusion 且无完整 ORM 时）> Normal > BaseColor > Roughness > Metallic
-    suffix_priority = ['_ORM', '_AO', '_N', '_D', '_R', '_M']
+    suffix_priority = ['_ORM', '_AO', '_N', '_D', '_Alpha', '_R', '_M']
     image_to_suffixes = {}
 
     for img_node in image_nodes:
