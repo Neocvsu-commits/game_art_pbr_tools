@@ -58,6 +58,62 @@ def is_pbr_texture_name_lower(name_lower):
     return match_orm_filename_suffix(name_lower) is not None
 
 
+def _strip_common_prefixes(name: str) -> str:
+    """去掉常见的 M_/T_/SM_ 前缀，返回核心名。"""
+    n = name.strip()
+    lower = n.lower()
+    if lower.startswith("sm_"):
+        return n[3:]
+    if lower.startswith("m_") or lower.startswith("t_"):
+        return n[2:]
+    if len(n) >= 2 and n[0].lower() in ("m", "t") and n[1] == "_":
+        return n[2:]
+    return n
+
+
+_MIN_CORE_LEN = 3  # 核心名最短长度，防止 "a" 之类的碰瓷大量文件
+_MIN_LENGTH_RATIO = 0.5  # 子串匹配时，较短串长度需 ≥ 较长串 × 此比例
+
+
+def fuzzy_match_core_name(mat_name: str, file_stem: str) -> int:
+    """
+    材质名与贴图文件名主干做模糊匹配，忽略 T_/M_/SM_ 前缀差异。
+    策略：精确优先 → 模糊子串回退。
+    返回匹配质量分 (0 = 不匹配，100 = 精确匹配)，分数越高越可靠。
+    """
+    if not mat_name or not file_stem:
+        return 0
+
+    mat_core = _strip_common_prefixes(mat_name)
+    file_core = _strip_common_prefixes(file_stem)
+
+    # 空核心名 → 拒绝（如 "M_" 去掉前缀后为空）
+    if not mat_core or not file_core:
+        return 0
+
+    mat_lower = mat_core.lower()
+    file_lower = file_core.lower()
+
+    # 过短核心名 → 拒绝（如 "a" 会碰瓷所有含 a 的文件）
+    if len(mat_lower) < _MIN_CORE_LEN or len(file_lower) < _MIN_CORE_LEN:
+        return 0
+
+    # 精确匹配（忽略大小写）→ 最高分
+    if mat_lower == file_lower:
+        return 100
+
+    # 模糊子串匹配：较短的 core 被较长的 core 包含
+    shorter = mat_lower if len(mat_lower) < len(file_lower) else file_lower
+    longer = file_lower if len(mat_lower) < len(file_lower) else mat_lower
+
+    if shorter in longer:
+        ratio = len(shorter) / len(longer)
+        if ratio >= _MIN_LENGTH_RATIO:
+            return int(ratio * 80)  # 映射到 40-79 分，和精确匹配拉开差距
+
+    return 0
+
+
 def _force_claim_name(datablocks, current, target_name):
     """
     强制夺取命名权：

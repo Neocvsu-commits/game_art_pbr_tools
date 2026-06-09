@@ -16,6 +16,7 @@ from .utils import (
     ensure_image_pixels_loaded,
     save_image_to_path_verified,
     read_disk_image_size,
+    fuzzy_match_core_name,
 )
 
 
@@ -364,19 +365,23 @@ class NODE_OT_PBRBatchFolderConnect(bpy.types.Operator):
                 nodes = mat.node_tree.nodes
                 
                 mat_name = mat.name
-                clean_mat_name = mat_name.split('.')[0] 
-                
-                tex_prefix = ""
-                if clean_mat_name.upper().startswith("M_"):
-                    tex_prefix = "T_" + clean_mat_name[2:]
-                else:
-                    tex_prefix = "T_" + clean_mat_name
+                clean_mat_name = mat_name.split('.')[0]  # 去掉 .001 后缀
 
-                matched_files = [
-                    f for f in all_files
-                    if f.lower().startswith(tex_prefix.lower())
-                    and f.lower().endswith(('.png', '.jpg', '.jpeg', '.tga', '.exr', '.tif', '.tiff'))
-                ]
+                # 模糊匹配：忽略 T_/M_/SM_ 前缀差异，精确优先+子串回退
+                matched_files = []
+                match_scores = {}  # f_name -> score, 用于排序取最佳匹配
+                for f in all_files:
+                    f_lower = f.lower()
+                    if not f_lower.endswith(('.png', '.jpg', '.jpeg', '.tga', '.exr', '.tif', '.tiff')):
+                        continue
+                    f_stem = os.path.splitext(f)[0]
+                    score = fuzzy_match_core_name(clean_mat_name, f_stem)
+                    if score > 0:
+                        matched_files.append(f)
+                        match_scores[f] = score
+
+                # 按匹配质量降序排列，优先用最佳匹配
+                matched_files.sort(key=lambda x: match_scores.get(x, 0), reverse=True)
                 
                 if not matched_files:
                     continue
@@ -738,3 +743,54 @@ class NODE_OT_PBROpenExportFolder(bpy.types.Operator):
 
         self.report({'INFO'}, "已打开导出目录")
         return {'FINISHED'}
+
+
+class NODE_OT_PBRCheckUpdate(bpy.types.Operator):
+    """检查 GitHub 上是否有新版本发布"""
+    bl_idname = "node.pbr_check_update"
+    bl_label = "检查更新"
+    bl_description = "立即检查 GitHub 是否有新版本发布"
+
+    def execute(self, context):
+        try:
+            from .update_checker import force_check_for_updates
+            from . import bl_info as addon_bl_info
+
+            force_check_for_updates(
+                "Neocvsu-commits",
+                "game_art_pbr_tools",
+                addon_bl_info["version"],
+                os.path.dirname(__file__),
+            )
+            self.report({"INFO"}, "已发起更新检查，请稍后查看面板顶部")
+        except ImportError:
+            self.report({"ERROR"}, "更新模块不可用")
+        except Exception as e:
+            self.report({"ERROR"}, f"检查失败: {e}")
+        return {"FINISHED"}
+
+
+class NODE_OT_PBRInstallUpdate(bpy.types.Operator):
+    """从 GitHub 下载最新版本并自动覆盖安装，需重启 Blender 生效"""
+    bl_idname = "node.pbr_install_update"
+    bl_label = "下载并安装更新"
+    bl_description = "从 GitHub 下载最新版本并自动覆盖安装，需重启 Blender 生效"
+
+    @classmethod
+    def poll(cls, context):
+        return True
+
+    def execute(self, context):
+        try:
+            from .update_checker import install_update
+        except ImportError:
+            self.report({"ERROR"}, "更新模块不可用，请手动更新")
+            return {"CANCELLED"}
+
+        plugin_dir = os.path.dirname(__file__)
+        success, msg = install_update("Neocvsu-commits", "game_art_pbr_tools", plugin_dir=plugin_dir)
+        if success:
+            self.report({"INFO"}, msg)
+        else:
+            self.report({"ERROR"}, msg)
+        return {"FINISHED"}

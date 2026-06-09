@@ -1,7 +1,7 @@
 bl_info = {
     "name": "PBR贴图助手",
     "author": "Neo",
-    "version": (2, 4, 0),
+    "version": (2, 5, 0),
     "blender": (3, 4, 0),
     "location": "Node Editor > Sidebar > PBR Tool",
     "description": "PBR贴图连接、重命名、清理、导出与压缩工具（正式版）",
@@ -9,6 +9,7 @@ bl_info = {
 }
 
 import bpy
+import os
 
 if "bpy" in locals():
     import importlib
@@ -20,15 +21,18 @@ if "bpy" in locals():
         importlib.reload(operators)
     if "ui" in locals():
         importlib.reload(ui)
+    if "update_checker" in locals():
+        importlib.reload(update_checker)
 
 from . import properties
 from . import utils
 from . import operators
 from . import ui
+from . import update_checker
 
 classes = (
     properties.PBRV2ToolProperties,
-    
+
     operators.NODE_OT_PBRConnectArrange,
     operators.NODE_OT_PBRCleanNodes,
     operators.NODE_OT_PBRRenameMaterial,
@@ -41,7 +45,9 @@ classes = (
     operators.NODE_OT_PBRExportCurrentTextures,
     operators.NODE_OT_PBROpenExportFolder,
     operators.NODE_OT_PBRBatchFolderConnect,
-    
+    operators.NODE_OT_PBRCheckUpdate,
+    operators.NODE_OT_PBRInstallUpdate,
+
     ui.NODE_PT_PBRMainPanel,
     ui.NODE_PT_PBRCorePanel,
     ui.NODE_PT_PBRRenamePanel,
@@ -51,10 +57,21 @@ classes = (
 )
 
 def register():
-    # 原有的清理工具已被精简，确保与其他插件完美兼容
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.pbr_v2_props = bpy.props.PointerProperty(type=properties.PBRV2ToolProperties)
+
+    # 后台检查更新
+    try:
+        from .update_checker import check_for_updates
+        check_for_updates(
+            owner="Neocvsu-commits",
+            repo="game_art_pbr_tools",
+            current_version=bl_info["version"],
+            plugin_dir=os.path.dirname(__file__),
+        )
+    except Exception:
+        pass
 
 def unregister():
     for cls in reversed(classes):
