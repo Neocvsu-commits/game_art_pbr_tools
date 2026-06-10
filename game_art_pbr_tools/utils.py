@@ -59,15 +59,21 @@ def is_pbr_texture_name_lower(name_lower):
 
 
 def _strip_common_prefixes(name: str) -> str:
-    """去掉常见的 M_/T_/SM_ 前缀，返回核心名。"""
+    """循环去掉常见的 SM_/M_/T_ 前缀，返回核心名。支持 SM_T_RockWall_D 这种多层前缀。"""
+    KNOWN_PREFIXES = ("sm_", "m_", "t_")
     n = name.strip()
-    lower = n.lower()
-    if lower.startswith("sm_"):
-        return n[3:]
-    if lower.startswith("m_") or lower.startswith("t_"):
-        return n[2:]
-    if len(n) >= 2 and n[0].lower() in ("m", "t") and n[1] == "_":
-        return n[2:]
+    while True:
+        lower = n.lower()
+        stripped = None
+        for pf in KNOWN_PREFIXES:
+            if lower.startswith(pf):
+                stripped = n[len(pf):]
+                break
+        if stripped is None and len(n) >= 2 and n[0].lower() in ("m", "t") and n[1] == "_":
+            stripped = n[2:]
+        if stripped is None:
+            break
+        n = stripped
     return n
 
 
