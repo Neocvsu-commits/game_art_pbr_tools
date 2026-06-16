@@ -3,6 +3,7 @@ import os
 import shutil
 import sys
 import subprocess
+import tempfile
 from bpy.props import StringProperty
 
 from .utils import (
@@ -17,7 +18,69 @@ from .utils import (
     save_image_to_path_verified,
     read_disk_image_size,
     fuzzy_match_core_name,
+    write_image_memory_to_path,
 )
+
+
+def _bake_image_to_packed(img, fmt, target_ext, scene=None):
+    """把当前内存像素以 fmt 烘焙进 packed_file。
+
+  流程：save_render(内存→临时文件) → filepath 指向临时文件 → reload → pack → 清空 filepath。
+    glb 打包贴图不能用 img.save()（会写出旧 packed 字节）；pack 后不能指向不存在的磁盘路径（会变粉）。
+    """
+    if not img:
+        return False
+    if not ensure_image_pixels_loaded(img):
+        print(f"[PBR Tools] 烘焙跳过（像素未载入） {getattr(img, 'name', '?')}")
+        return False
+
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=target_ext)
+        os.close(fd)
+
+        img.file_format = fmt
+        img.save_render(tmp, scene=scene)
+        if not os.path.isfile(tmp) or os.path.getsize(tmp) == 0:
+            print(f"[PBR Tools] 烘焙临时文件无效 {getattr(img, 'name', '?')}")
+            return False
+
+        old_fp = img.filepath
+        old_raw = getattr(img, "filepath_raw", None)
+        img.filepath = tmp
+        if old_raw is not None:
+            img.filepath_raw = tmp
+        img.reload()
+
+        if img.size[0] == 0 or img.size[1] == 0:
+            print(f"[PBR Tools] reload 后像素为空 {getattr(img, 'name', '?')}")
+            return False
+
+        img.pack()
+        img.file_format = fmt
+
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        tmp = None
+
+        # 打包后清空外部路径，避免指向不存在文件触发重载丢弃 packed 数据
+        try:
+            img.filepath = ""
+            if old_raw is not None:
+                img.filepath_raw = ""
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        print(f"[PBR Tools] 烘焙打包失败 {getattr(img, 'name', '?')}: {e}")
+        if tmp and os.path.isfile(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        return False
 
 
 def _export_textures_for_materials_to_dir(context, mats, directory, update_last_path=True):
@@ -68,24 +131,32 @@ def _export_textures_for_materials_to_dir(context, mats, directory, update_last_
         original_raw = getattr(img, "filepath_raw", None)
         real_filepath = bpy.path.abspath(img.filepath) if img.filepath else ""
 
-        try:
-            img.filepath = export_path
-            if original_raw is not None:
-                img.filepath_raw = export_path
-            img.save()
-            is_exported = True
-        except Exception as e:
-            print(f"[PBR Tools] 导出当前图像数据失败 {img.name}: {e}")
-            if real_filepath and os.path.exists(real_filepath):
-                try:
-                    shutil.copy2(real_filepath, export_path)
-                    is_exported = True
-                except Exception as copy_e:
-                    print(f"[PBR Tools] 兜底拷贝失败 {img.name}: {copy_e}")
-        finally:
-            img.filepath = original_filepath
-            if original_raw is not None:
-                img.filepath_raw = original_raw
+        use_memory = bool(
+            getattr(img, "packed_file", None)
+            or getattr(img, "has_data", False)
+            or img.get("_pbr_unsynced_resize")
+        )
+        if use_memory:
+            is_exported = write_image_memory_to_path(img, export_path, scene=context.scene)
+        if not is_exported:
+            try:
+                img.filepath = export_path
+                if original_raw is not None:
+                    img.filepath_raw = export_path
+                img.save()
+                is_exported = True
+            except Exception as e:
+                print(f"[PBR Tools] 导出当前图像数据失败 {img.name}: {e}")
+                if real_filepath and os.path.exists(real_filepath):
+                    try:
+                        shutil.copy2(real_filepath, export_path)
+                        is_exported = True
+                    except Exception as copy_e:
+                        print(f"[PBR Tools] 兜底拷贝失败 {img.name}: {copy_e}")
+            finally:
+                img.filepath = original_filepath
+                if original_raw is not None:
+                    img.filepath_raw = original_raw
 
         if is_exported:
             count += 1
@@ -480,6 +551,7 @@ class NODE_OT_PBRCompressTextures(bpy.types.Operator):
                 continue
 
             is_modified = False
+            baked = False
             original_filepath = img.filepath
             source_abs_path = bpy.path.abspath(original_filepath) if original_filepath else ""
             desired_ext = (
@@ -525,22 +597,22 @@ class NODE_OT_PBRCompressTextures(bpy.types.Operator):
                 elif user_ratio < 1.0 - 1e-6:
                     resize_blocked_by_min.append(img.name)
 
-            # Step 2: 格式转换（优先更新当前图像数据）
+            # Step 2: 格式转换 — 通过临时文件烘焙出目标格式的 packed 数据
             if props.target_format != 'CURRENT':
                 fmt = props.target_format
                 target_ext = ext_map.get(fmt, '.png')
                 current_name = img.name
-                # 检查当前名称后缀是否已是目标格式
-                if not os.path.splitext(current_name)[1].lower() == target_ext:
-                    try:
+                if os.path.splitext(current_name)[1].lower() != target_ext:
+                    if _bake_image_to_packed(img, fmt, target_ext, context.scene):
                         new_name = os.path.splitext(current_name)[0] + target_ext
-                        img.file_format = fmt
-                        img.name = new_name
+                        try:
+                            img.name = new_name
+                        except Exception:
+                            pass
                         desired_ext = target_ext
                         is_modified = True
+                        baked = True
                         converted_count += 1
-                    except Exception as e:
-                        print(f"[PBR Tools] 格式转换失败 {img.name}: {e}")
             
             needs_disk_sync = bool(img.get("_pbr_unsynced_resize", False))
             # 防止历史标记导致“空转写盘”：若当前尺寸与磁盘一致，则清理标记并跳过补同步
@@ -566,6 +638,12 @@ class NODE_OT_PBRCompressTextures(bpy.types.Operator):
                         if not save_image_to_path_verified(img, target_abs_path, context.scene):
                             disk_sync_failed.append(img.name)
                         else:
+                            if os.path.normcase(target_abs_path) != os.path.normcase(source_abs_path):
+                                if os.path.isfile(source_abs_path):
+                                    try:
+                                        os.remove(source_abs_path)
+                                    except OSError as rm_e:
+                                        print(f"[PBR Tools] 删除旧格式贴图失败 {source_abs_path}: {rm_e}")
                             if "_pbr_unsynced_resize" in img:
                                 try:
                                     del img["_pbr_unsynced_resize"]
@@ -573,14 +651,18 @@ class NODE_OT_PBRCompressTextures(bpy.types.Operator):
                                     pass
                     else:
                         disk_sync_failed.append(img.name)
-                elif context.blend_data.use_autopack:
-                    try:
-                        img.pack()
-                    except Exception as e:
-                        print(f"[PBR Tools] 自动打包失败 {img.name}: {e}")
-                    if is_modified:
-                        img["_pbr_unsynced_resize"] = True
                 else:
+                    # 不写盘：把当前内存缓冲烘焙成 packed 数据，保证视口与导出都拿到修改后的像素。
+                    # 直接 img.pack() 对 source='FILE' 且磁盘原图仍在的贴图会重读原图、丢失缩放，
+                    # 故统一走 _bake_image_to_packed（缩放-only 时按当前 file_format 烘焙）。
+                    if is_modified and not baked:
+                        cur_fmt = img.file_format or 'PNG'
+                        cur_ext = ext_map.get(cur_fmt, os.path.splitext(img.name)[1].lower() or '.png')
+                        if not _bake_image_to_packed(img, cur_fmt, cur_ext, context.scene):
+                            try:
+                                img.pack()
+                            except Exception as e:
+                                print(f"[PBR Tools] 内存更新后打包失败 {img.name}: {e}")
                     if is_modified:
                         img["_pbr_unsynced_resize"] = True
 

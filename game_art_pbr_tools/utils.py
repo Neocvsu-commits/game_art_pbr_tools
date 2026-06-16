@@ -122,26 +122,38 @@ def fuzzy_match_core_name(mat_name: str, file_stem: str) -> int:
 
 def _force_claim_name(datablocks, current, target_name):
     """
-    强制夺取命名权：
-    - 若 datablocks 中已存在同名 target_name，且不是 current 本体，则把占位者改名为 target_name + "_old"
-    - 再将 current.name 设置为 target_name
-    说明：若 _old 也冲突，Blender 会自动追加 .001 等后缀，这里允许。
+    强制夺取命名权：循环驱逐同名占位者到 _N 增序号，再设当前块为目标名。
+    返回 True 当且仅当 current.name 最终等于 target_name。
     """
     if not current or not target_name:
         return False
 
-    existing = datablocks.get(target_name)
-    if existing and existing != current:
+    if current.name == target_name:
+        return True
+
+    # 循环驱逐同名占位者到增序备用名（_1, _2, ...），避免 _old 只能挡一次
+    counter = 1
+    while counter <= 100:
+        existing = datablocks.get(target_name)
+        if not existing or existing == current:
+            break
+        backup = f"{target_name}_{counter}"
+        while backup in datablocks and counter <= 100:
+            counter += 1
+            backup = f"{target_name}_{counter}"
+        if counter > 100:
+            break
         try:
-            existing.name = target_name + "_old"
+            existing.name = backup
         except Exception:
             pass
+        counter += 1
 
     try:
         current.name = target_name
-        return True
     except Exception:
         return False
+    return current.name == target_name
 
 def connect_pbr_nodes(nodes, links, principled_node, image_nodes):
     """将图像节点连接到 Principled BSDF 对应通道，并自动修正已有节点和色彩空间"""
@@ -458,12 +470,80 @@ def save_image_to_path_atomic(image, final_abs_path: str) -> bool:
                 pass
 
 
+_EXT_TO_FILE_FORMAT = {
+    ".jpg": "JPEG",
+    ".jpeg": "JPEG",
+    ".png": "PNG",
+    ".tga": "TARGA",
+    ".tif": "TIFF",
+    ".tiff": "TIFF",
+    ".bmp": "BMP",
+    ".exr": "OPEN_EXR",
+}
+
+
+def write_image_memory_to_path(image, final_abs_path: str, scene=None) -> bool:
+    """
+    将当前内存像素写出到磁盘。
+    glb/blend 打包贴图必须用 save_render：img.save() 会写出 packed_file 里的原始字节。
+    """
+    if not image or not final_abs_path:
+        return False
+    directory = os.path.dirname(final_abs_path) or "."
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError:
+        pass
+
+    if not ensure_image_pixels_loaded(image):
+        packed = getattr(image, "packed_file", None)
+        if packed and packed.data:
+            try:
+                with open(final_abs_path, "wb") as f:
+                    f.write(packed.data)
+                return os.path.getsize(final_abs_path) > 0
+            except Exception as e:
+                print(f"[PBR Tools] 写出 packed 字节失败 {getattr(image, 'name', '?')}: {e}")
+        return False
+
+    ext = os.path.splitext(final_abs_path)[1].lower()
+    target_fmt = _EXT_TO_FILE_FORMAT.get(ext)
+    old_fmt = getattr(image, "file_format", None)
+
+    try:
+        if target_fmt:
+            image.file_format = target_fmt
+        image.save_render(final_abs_path, scene=scene)
+        if os.path.isfile(final_abs_path) and os.path.getsize(final_abs_path) > 0:
+            return True
+    except Exception as e:
+        print(f"[PBR Tools] save_render 写出失败 {getattr(image, 'name', '?')}: {e}")
+    finally:
+        if old_fmt is not None:
+            try:
+                image.file_format = old_fmt
+            except Exception:
+                pass
+
+    packed = getattr(image, "packed_file", None)
+    if packed and packed.data:
+        try:
+            with open(final_abs_path, "wb") as f:
+                f.write(packed.data)
+            return os.path.getsize(final_abs_path) > 0
+        except Exception as e:
+            print(f"[PBR Tools] save_render 失败后 packed 兜底写出失败 {getattr(image, 'name', '?')}: {e}")
+    return False
+
+
 def save_image_to_path_verified(image, final_abs_path: str, scene=None) -> bool:
     """
     写盘（稳定优先）：
     1) 直接 save 到目标路径（最贴近当前 Image 数据写出）；
     2) 失败时回退 save_render；
     3) 再失败才尝试原子替换。
+
+    成功时保留 filepath 指向 final_abs_path，避免写盘后路径回滚导致 Blender 从旧文件重载变粉。
     """
     if not image or not final_abs_path:
         return False
@@ -476,15 +556,29 @@ def save_image_to_path_verified(image, final_abs_path: str, scene=None) -> bool:
     old_filepath = image.filepath
     old_raw = getattr(image, "filepath_raw", None)
 
-    # 路径 1（优先）：直接 save 到目标路径
+    def _restore_path():
+        try:
+            image.filepath = old_filepath
+            if old_raw is not None:
+                image.filepath_raw = old_raw
+        except Exception:
+            pass
+
+    def _commit_path():
+        image.filepath = final_abs_path
+        if old_raw is not None:
+            image.filepath_raw = final_abs_path
+
+    # 打包贴图 / 内存已改：save_render 优先，img.save() 会写出旧 packed 字节
+    if getattr(image, "packed_file", None) or getattr(image, "has_data", False):
+        if write_image_memory_to_path(image, final_abs_path, scene=scene):
+            _commit_path()
+            return True
+
+    # 路径 1：直接 save 到目标路径
     try:
-        image.filepath = final_abs_path
-        if old_raw is not None:
-            image.filepath_raw = final_abs_path
+        _commit_path()
         image.save()
-        image.filepath = final_abs_path
-        if old_raw is not None:
-            image.filepath_raw = final_abs_path
         try:
             image.reload()
         except Exception:
@@ -492,20 +586,12 @@ def save_image_to_path_verified(image, final_abs_path: str, scene=None) -> bool:
         return True
     except Exception as e:
         print(f"[PBR Tools] 直接 save 失败 {getattr(image, 'name', '?')}: {e}")
-    finally:
-        try:
-            image.filepath = old_filepath
-            if old_raw is not None:
-                image.filepath_raw = old_raw
-        except Exception:
-            pass
+        _restore_path()
 
     # 路径 2：save_render 回退
     try:
         image.save_render(final_abs_path, scene=scene)
-        image.filepath = final_abs_path
-        if old_raw is not None:
-            image.filepath_raw = final_abs_path
+        _commit_path()
         try:
             image.reload()
         except Exception:
@@ -513,16 +599,13 @@ def save_image_to_path_verified(image, final_abs_path: str, scene=None) -> bool:
         return True
     except Exception as e:
         print(f"[PBR Tools] save_render 回退失败 {getattr(image, 'name', '?')}: {e}")
-    finally:
-        try:
-            image.filepath = old_filepath
-            if old_raw is not None:
-                image.filepath_raw = old_raw
-        except Exception:
-            pass
+        _restore_path()
 
     # 路径 3：原子替换兜底
-    return save_image_to_path_atomic(image, final_abs_path)
+    if save_image_to_path_atomic(image, final_abs_path):
+        return True
+    _restore_path()
+    return False
 
 
 def read_disk_image_size(abs_path: str):
@@ -904,23 +987,24 @@ def _build_texture_base_name_from_material_name(material_name):
 
 
 def _image_extension(image):
-    """获取真实的图像扩展名，彻底忽略 Blender 的 .001 命名后缀。优先从 filepath 获取，其次从 file_format 推断。"""
-    # 1. 优先尝试从真实磁盘路径获取扩展名
-    if image.filepath:
-        ext = os.path.splitext(bpy.path.abspath(image.filepath))[1].lower()
-        valid_exts = ['.png', '.jpg', '.jpeg', '.tga', '.exr', '.tif', '.tiff', '.bmp', '.psd']
-        if ext in valid_exts:
-            return ext
-            
-    # 2. 如果路径为空或扩展名不规范（例如打包的纯内嵌/生成的贴图），通过 Blender 内部的 file_format 推断
+    """获取真实的图像扩展名。file_format 反映内存中实际格式，优先于 filepath（转换后路径可能未改）。"""
     format_ext_map = {
         'JPEG': '.jpg', 'PNG': '.png', 'TARGA': '.tga', 'TARGA_RAW': '.tga',
         'TIFF': '.tif', 'BMP': '.bmp', 'OPEN_EXR': '.exr'
     }
     if image.file_format in format_ext_map:
         return format_ext_map[image.file_format]
-        
-    # 3. 兜底方案
+
+    name_ext = os.path.splitext(image.name)[1].lower()
+    valid_exts = ['.png', '.jpg', '.jpeg', '.tga', '.exr', '.tif', '.tiff', '.bmp', '.psd']
+    if name_ext in valid_exts:
+        return '.jpg' if name_ext == '.jpeg' else name_ext
+
+    if image.filepath:
+        ext = os.path.splitext(bpy.path.abspath(image.filepath))[1].lower()
+        if ext in valid_exts:
+            return '.jpg' if ext == '.jpeg' else ext
+
     return ".png"
 
 
