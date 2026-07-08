@@ -1,7 +1,7 @@
 bl_info = {
     "name": "PBR贴图助手",
     "author": "Neo",
-    "version": (2, 5, 4),
+    "version": (2, 5, 5),
     "blender": (3, 4, 0),
     "location": "Node Editor > Sidebar > PBR Tool",
     "description": "PBR贴图连接、重命名、清理、导出与压缩工具（正式版）",

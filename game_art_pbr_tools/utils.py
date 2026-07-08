@@ -155,6 +155,118 @@ def _force_claim_name(datablocks, current, target_name):
         return False
     return current.name == target_name
 
+
+def is_multiply_mix_node(node):
+    """判断节点是否为正片叠底混合节点（兼容旧版 MixRGB 与新版 Mix）。"""
+    if node is None or node.type not in ('MIX_RGB', 'MIX'):
+        return False
+    if getattr(node, 'blend_type', '') != 'MULTIPLY':
+        return False
+    if node.type == 'MIX':
+        return getattr(node, 'data_type', 'RGBA') in ('RGBA', 'VECTOR')
+    return True
+
+
+def create_multiply_mix_node(nodes):
+    """
+    创建正片叠底颜色混合节点。
+    Blender 4.x 使用 ShaderNodeMix（颜色混合），GLB 导出可正确保留 AO 叠乘；
+    旧版 ShaderNodeMixRGB 在 glTF 导出时可能不生效。
+    """
+    try:
+        mix_node = nodes.new(type='ShaderNodeMix')
+        mix_node.data_type = 'RGBA'
+        mix_node.blend_type = 'MULTIPLY'
+        fac = mix_node.inputs.get('Factor') or mix_node.inputs.get('Fac')
+        if fac:
+            fac.default_value = 1.0
+        return mix_node
+    except Exception:
+        mix_node = nodes.new(type='ShaderNodeMixRGB')
+        mix_node.blend_type = 'MULTIPLY'
+        mix_node.inputs['Fac'].default_value = 1.0
+        return mix_node
+
+
+def get_mix_input_a(mix_node):
+    inp = mix_node.inputs.get('A') or mix_node.inputs.get('Color1')
+    if not inp and len(mix_node.inputs) > 1:
+        inp = mix_node.inputs[1]
+    return inp
+
+
+def get_mix_input_b(mix_node):
+    inp = mix_node.inputs.get('B') or mix_node.inputs.get('Color2')
+    if not inp and len(mix_node.inputs) > 2:
+        inp = mix_node.inputs[2]
+    return inp
+
+
+def get_mix_output(mix_node):
+    return mix_node.outputs.get('Result') or mix_node.outputs.get('Color')
+
+
+def upgrade_legacy_multiply_mix(nodes, links, legacy_node, base_color_input):
+    """将旧版 MixRGB 正片叠底节点升级为 ShaderNodeMix，以兼容 GLB 导出。"""
+    if legacy_node.type != 'MIX_RGB':
+        return legacy_node
+
+    in1 = get_mix_input_a(legacy_node)
+    in2 = get_mix_input_b(legacy_node)
+    fac = legacy_node.inputs.get('Fac') or legacy_node.inputs.get('Factor')
+    fac_val = fac.default_value if fac else 1.0
+
+    in1_socket = in1.links[0].from_socket if in1 and in1.is_linked else None
+    in2_socket = in2.links[0].from_socket if in2 and in2.is_linked else None
+
+    new_node = create_multiply_mix_node(nodes)
+    new_fac = new_node.inputs.get('Factor') or new_node.inputs.get('Fac')
+    if new_fac:
+        new_fac.default_value = fac_val
+
+    for link in list(base_color_input.links):
+        links.remove(link)
+
+    new_out = get_mix_output(new_node)
+    if new_out:
+        links.new(new_out, base_color_input)
+
+    new_in1 = get_mix_input_a(new_node)
+    new_in2 = get_mix_input_b(new_node)
+    if in1_socket and new_in1:
+        links.new(in1_socket, new_in1)
+    if in2_socket and new_in2:
+        links.new(in2_socket, new_in2)
+
+    nodes.remove(legacy_node)
+    return new_node
+
+
+def ensure_multiply_mix_for_base_color(nodes, links, base_color_input):
+    """获取、升级或创建用于 Base Color 的正片叠底混合节点。"""
+    mix_node = None
+    if base_color_input.is_linked:
+        conn_node = base_color_input.links[0].from_node
+        if is_multiply_mix_node(conn_node):
+            mix_node = conn_node
+
+    if mix_node and mix_node.type == 'MIX_RGB':
+        mix_node = upgrade_legacy_multiply_mix(nodes, links, mix_node, base_color_input)
+
+    if not mix_node:
+        mix_node = create_multiply_mix_node(nodes)
+        if base_color_input.is_linked:
+            existing_link = base_color_input.links[0]
+            in1 = get_mix_input_a(mix_node)
+            if in1:
+                links.new(existing_link.from_socket, in1)
+        out = get_mix_output(mix_node)
+        if out:
+            links.new(out, base_color_input)
+
+    return mix_node
+
+
 def connect_pbr_nodes(nodes, links, principled_node, image_nodes):
     """将图像节点连接到 Principled BSDF 对应通道，并自动修正已有节点和色彩空间"""
 
@@ -172,13 +284,15 @@ def connect_pbr_nodes(nodes, links, principled_node, image_nodes):
             mix_node = None
             if target_socket and target_socket.is_linked:
                 conn_node = target_socket.links[0].from_node
-                if conn_node.type in ('MIX_RGB', 'MIX') and getattr(conn_node, 'blend_type', '') == 'MULTIPLY':
+                if is_multiply_mix_node(conn_node):
                     mix_node = conn_node
+                    if mix_node.type == 'MIX_RGB':
+                        mix_node = upgrade_legacy_multiply_mix(nodes, links, mix_node, target_socket)
             
             if mix_node:
-                in1 = mix_node.inputs.get('Color1') or mix_node.inputs.get('A')
-                if not in1 and len(mix_node.inputs) > 1: in1 = mix_node.inputs[1]
-                if in1: links.new(img_node.outputs['Color'], in1)
+                in1 = get_mix_input_a(mix_node)
+                if in1:
+                    links.new(img_node.outputs['Color'], in1)
             elif target_socket:
                 links.new(img_node.outputs['Color'], target_socket)
 
@@ -207,27 +321,10 @@ def connect_pbr_nodes(nodes, links, principled_node, image_nodes):
             
             base_color_input = principled_node.inputs.get('Base Color')
             if base_color_input:
-                mix_node = None
-                if base_color_input.is_linked:
-                    for link in base_color_input.links:
-                        if link.from_node.type in ('MIX_RGB', 'MIX'):
-                            if getattr(link.from_node, 'blend_type', '') == 'MULTIPLY':
-                                mix_node = link.from_node
-                                break
-                
-                if not mix_node:
-                    mix_node = nodes.new(type='ShaderNodeMixRGB')
-                    mix_node.blend_type = 'MULTIPLY'
-                    mix_node.inputs['Fac'].default_value = 1.0
-                    if base_color_input.is_linked:
-                        existing_link = base_color_input.links[0]
-                        in1 = mix_node.inputs.get('Color1') or mix_node.inputs.get('A') or mix_node.inputs[1]
-                        links.new(existing_link.from_socket, in1)
-                    links.new(mix_node.outputs['Color'], base_color_input)
-                
-                in2 = mix_node.inputs.get('Color2') or mix_node.inputs.get('B')
-                if not in2 and len(mix_node.inputs) > 2: in2 = mix_node.inputs[2]
-                if in2: links.new(sep_node.outputs[0], in2)
+                mix_node = ensure_multiply_mix_for_base_color(nodes, links, base_color_input)
+                in2 = get_mix_input_b(mix_node)
+                if in2:
+                    links.new(sep_node.outputs[0], in2)
 
         elif check_suffix(name_lower, SUFFIX_MAP['RMA']):
             try: img_node.image.colorspace_settings.name = 'Non-Color'
@@ -286,27 +383,10 @@ def connect_pbr_nodes(nodes, links, principled_node, image_nodes):
             except: pass
             base_color_input = principled_node.inputs.get('Base Color')
             if base_color_input:
-                mix_node = None
-                if base_color_input.is_linked:
-                    for link in base_color_input.links:
-                        if link.from_node.type in ('MIX_RGB', 'MIX'):
-                            if getattr(link.from_node, 'blend_type', '') == 'MULTIPLY':
-                                mix_node = link.from_node
-                                break
-                
-                if not mix_node:
-                    mix_node = nodes.new(type='ShaderNodeMixRGB')
-                    mix_node.blend_type = 'MULTIPLY'
-                    mix_node.inputs['Fac'].default_value = 1.0
-                    if base_color_input.is_linked:
-                        existing_link = base_color_input.links[0]
-                        in1 = mix_node.inputs.get('Color1') or mix_node.inputs.get('A') or mix_node.inputs[1]
-                        links.new(existing_link.from_socket, in1)
-                    links.new(mix_node.outputs['Color'], base_color_input)
-                
-                in2 = mix_node.inputs.get('Color2') or mix_node.inputs.get('B')
-                if not in2 and len(mix_node.inputs) > 2: in2 = mix_node.inputs[2]
-                if in2: links.new(img_node.outputs['Color'], in2)
+                mix_node = ensure_multiply_mix_for_base_color(nodes, links, base_color_input)
+                in2 = get_mix_input_b(mix_node)
+                if in2:
+                    links.new(img_node.outputs['Color'], in2)
 
         elif check_suffix(name_lower, SUFFIX_MAP['ALPHA']):
             try: img_node.image.colorspace_settings.name = 'Non-Color'
@@ -766,7 +846,7 @@ def process_connect_and_arrange(mat, context=None):
     bc_socket = principled_node.inputs.get('Base Color')
     if bc_socket and bc_socket.is_linked:
         mix_node = bc_socket.links[0].from_node
-        if mix_node.type in ('MIX_RGB', 'MIX'):
+        if is_multiply_mix_node(mix_node):
             mix_node.location = (intermediate_x, loc_y_map['BASE_COLOR'])
             
     # 排列贴图节点
