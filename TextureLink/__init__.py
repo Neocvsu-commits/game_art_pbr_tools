@@ -1,5 +1,5 @@
 bl_info = {
-    "name": "PBR贴图助手",
+    "name": "TextureLink",
     "author": "Neo",
     "version": (2, 5, 5),
     "blender": (3, 4, 0),
@@ -66,7 +66,7 @@ def register():
         from .update_checker import check_for_updates
         check_for_updates(
             owner="Neocvsu-commits",
-            repo="game_art_pbr_tools",
+            repo="Blender-TextureLink",
             current_version=bl_info["version"],
             plugin_dir=os.path.dirname(__file__),
         )

@@ -9,7 +9,7 @@ def _draw_update_banner(layout):
         return
 
     row = layout.row(align=True)
-    status = get_check_status("Neocvsu-commits", "game_art_pbr_tools")
+    status = get_check_status("Neocvsu-commits", "Blender-TextureLink")
     st = status.get("status", "pending")
 
     if st == "checking":
@@ -25,7 +25,7 @@ def _draw_update_banner(layout):
 
     row.operator("node.pbr_check_update", text="", icon="FILE_REFRESH")
 
-    info = get_update_info("Neocvsu-commits", "game_art_pbr_tools")
+    info = get_update_info("Neocvsu-commits", "Blender-TextureLink")
     if not info:
         return
     box = layout.box()
@@ -39,7 +39,7 @@ def _draw_update_banner(layout):
 
 
 class NODE_PT_PBRMainPanel(bpy.types.Panel):
-    bl_label = "PBR 贴图助手"
+    bl_label = "TextureLink"
     bl_idname = "NODE_PT_pbr_main"
     bl_space_type = 'NODE_EDITOR'
     bl_region_type = 'UI'
@@ -243,7 +243,7 @@ class NODE_PT_PBRBatchPanel(bpy.types.Panel):
             "wm.url_open",
             text="Bug / 功能建议",
             icon="GHOST_ENABLED",
-        ).url = "https://github.com/Neocvsu-commits/game_art_pbr_tools/issues/new"
+        ).url = "https://github.com/Neocvsu-commits/Blender-TextureLink/issues/new"
         fb_row.operator(
             "wm.url_open",
             text="匿名反馈",

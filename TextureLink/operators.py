@@ -840,7 +840,7 @@ class NODE_OT_PBRCheckUpdate(bpy.types.Operator):
 
             force_check_for_updates(
                 "Neocvsu-commits",
-                "game_art_pbr_tools",
+                "Blender-TextureLink",
                 addon_bl_info["version"],
                 os.path.dirname(__file__),
             )
@@ -870,7 +870,7 @@ class NODE_OT_PBRInstallUpdate(bpy.types.Operator):
             return {"CANCELLED"}
 
         plugin_dir = os.path.dirname(__file__)
-        success, msg = install_update("Neocvsu-commits", "game_art_pbr_tools", plugin_dir=plugin_dir)
+        success, msg = install_update("Neocvsu-commits", "Blender-TextureLink", plugin_dir=plugin_dir)
         if success:
             self.report({"INFO"}, msg)
         else:

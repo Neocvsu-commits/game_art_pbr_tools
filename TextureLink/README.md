@@ -1,7 +1,7 @@
-# Game Art PBR Tools (游戏美术PBR贴图助手)
+# TextureLink
 
 **作者**: Neo  
-**版本**: 2.3.0（正式版，`bl_info.version`: `(2, 3, 0)`）  
+**版本**: 2.5.5（正式版，`bl_info.version`: `(2, 5, 5)`）  
 **兼容性**: Blender 3.4.0 及以上（与 `bl_info.blender` 一致）
 
 团队内部更完整的使用说明见同目录上一级：`../PBR贴图助手_团队内部使用文档.md`。
@@ -10,7 +10,7 @@
 
 ## 💡 功能简介
 
-Game Art PBR Tools 是一款专为游戏美术开发者和 Blender 材质创作者设计的效率提升插件。
+TextureLink 是一款专为游戏美术开发者和 Blender 材质创作者设计的效率提升插件。
 它能够一键帮你完成大量繁琐的 PBR (Physically Based Rendering) 贴图节点连接、整理、重命名、清理，甚至提供了一键打包与智能图像压缩功能，极大地提升你的工作效率。
 
 ### 核心特性
@@ -30,7 +30,7 @@ Game Art PBR Tools 是一款专为游戏美术开发者和 Blender 材质创作�
 2. 打开 Blender，前往 **编辑 (Edit)** -> **偏好设置 (Preferences)** -> **插件 (Add-ons)**。
 3. 点击顶部的 **安装 (Install)** 按钮。
 4. 在弹出的文件浏览器中，找到你刚刚下载的 `.zip` 压缩包，选中并点击 **安装插件 (Install Add-on)**。
-5. 在插件过滤搜索框中输入 "Game Art PBR Tools"，勾选插件左侧的方框以启用它。
+5. 在插件过滤搜索框中输入 "TextureLink"，勾选插件左侧的方框以启用它。
 
 ---
 

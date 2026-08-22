@@ -9,13 +9,13 @@ Blender 插件自动更新检查（共用模块）
         ...
         check_for_updates(
             owner="Neocvsu-commits",
-            repo="game_art_pbr_tools",
+            repo="Blender-TextureLink",
             current_version=bl_info["version"],
             plugin_dir=os.path.dirname(__file__),
         )
 
     # ui.py
-    info = get_update_info("Neocvsu-commits", "game_art_pbr_tools")
+    info = get_update_info("Neocvsu-commits", "Blender-TextureLink")
     if info:
         layout.label(text=f"有新版本 v{info['latest_version']}")
 """
